@@ -130,6 +130,34 @@ On **push / PR** to `main` or `master`:
 
 Workflow file: **`.github/workflows/ci.yml`**.
 
+## EC2 deployment (CD)
+
+Workflow file: **`.github/workflows/deploy-ec2.yml`**.
+
+- Triggered after **CI succeeds on `main`** (`workflow_run`) or manually (`workflow_dispatch`).
+- Uses SSH to connect to EC2, pull latest code, install dependencies, run Prisma migrations, and restart API with PM2.
+- Uses idempotent operations (`mkdir -p`, `git fetch/reset`, `npm ci`) so reruns are safe.
+
+### Required GitHub Secrets
+
+| Secret | Purpose |
+|--------|---------|
+| `EC2_HOST` | Public EC2 hostname or IP |
+| `EC2_USER` | SSH user (e.g. `ubuntu`) |
+| `EC2_SSH_KEY` | Private key (PEM content) |
+| `EC2_PORT` | SSH port (usually `22`) |
+| `EC2_APP_DIR` | App path on EC2 (e.g. `/home/ubuntu/shopsmart`) |
+| `EC2_BRANCH` | Branch to deploy (usually `main`) |
+| `EC2_PM2_APP_NAME` | PM2 process name (e.g. `shopsmart-api`) |
+
+### One-time EC2 setup
+
+```bash
+sudo npm i -g pm2
+```
+
+Ensure `server/.env` is present on EC2 with production values (especially `DATABASE_URL` and `JWT_SECRET`).
+
 ## Dependabot
 
 **`.github/dependabot.yml`** opens weekly PRs to update **npm** dependencies in the repo root, **`client/`**, and **`server/`**, and to bump **GitHub Actions** versions. Enable it by merging that file into the default branch (Settings → Code security → Dependabot version updates must be allowed for the repo).
