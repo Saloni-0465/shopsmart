@@ -1,0 +1,74 @@
+name: Deploy to EC2
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ec2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: SSH deploy on EC2
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            APP_DIR="${{ secrets.EC2_APP_DIR }}"
+            BRANCH="${{ secrets.EC2_BRANCH }}"
+            PM2_APP="${{ secrets.EC2_PM2_APP_NAME }}"
+
+            if [ -z "${APP_DIR}" ]; then APP_DIR="$HOME/shopsmart"; fi
+            if [ -z "${BRANCH}" ]; then BRANCH="main"; fi
+            if [ -z "${PM2_APP}" ]; then PM2_APP="shopsmart-api"; fi
+
+            mkdir -p "$APP_DIR"
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+              git clone "https://github.com/${{ github.repository }}.git" "$APP_DIR"
+            fi
+
+            cd "$APP_DIR"
+            git fetch --all --prune
+            git checkout "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            npm ci
+            npm ci --prefix server
+            npm ci --prefix client
+
+            cd server
+            npx prisma migrate deploy
+
+            # Do NOT seed in production by default; enable manually if needed.
+            # npm run db:seed
+
+            if command -v pm2 >/dev/null 2>&1; then
+              if pm2 describe "$PM2_APP" >/dev/null 2>&1; then
+                pm2 restart "$PM2_APP" --update-env
+              else
+                pm2 start src/index.js --name "$PM2_APP"
+              fi
+              pm2 save
+            else
+              echo "pm2 is not installed on EC2. Install pm2 or replace restart command."
+              exit 1
+            fi
