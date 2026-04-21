@@ -1,12 +1,22 @@
 # Shopsmart
 
-**Shopsmart** is an **e-commerce platform** for selling **products** online (electronics, home, sports, groceries, and more)—not a bookstore or content site.
+## Project Overview
+
+Shopsmart is a full-stack e-commerce platform demonstrating modern software engineering practices including:
+
+- Frontend + Backend integration
+- CI/CD pipelines using GitHub Actions
+- Automated testing (unit, integration, E2E)
+- Cloud deployment on AWS EC2
+- Infrastructure provisioning using Terraform
+
+This project showcases an end-to-end production-like workflow.
 
 Stack: **React (Vite)** + **Express** + **Prisma** + **MySQL**.
 
 ## Features
 
-#checking code quality
+## Code Quality & Features
 
 - Product catalog (retail goods)
 - Register / login (JWT)
@@ -161,6 +171,39 @@ Ensure `server/.env` is present on EC2 with production values (especially `DATAB
 ## Dependabot
 
 **`.github/dependabot.yml`** opens weekly PRs to update **npm** dependencies in the repo root, **`client/`**, and **`server/`**, and to bump **GitHub Actions** versions. Enable it by merging that file into the default branch (Settings → Code security → Dependabot version updates must be allowed for the repo).
+
+## Terraform (Phase 2)
+
+Terraform config is in **`infra/terraform/`** and provisions an S3 bucket with:
+
+- **Unique name** (provided as `bucket_name`)
+- **Versioning enabled**
+- **Encryption enabled** (SSE-S3 / AES256)
+- **Public access blocked**
+
+### Local commands
+
+```bash
+cd infra/terraform
+terraform init
+terraform fmt -check
+terraform validate
+terraform plan -var="bucket_name=YOUR_UNIQUE_BUCKET_NAME"
+terraform apply -var="bucket_name=YOUR_UNIQUE_BUCKET_NAME"
+```
+
+### GitHub Actions (Terraform)
+
+Workflow: **`.github/workflows/terraform.yml`**
+
+- On PR/push touching `infra/terraform/**`: runs **fmt / init / validate / plan**
+- Manual apply: run workflow dispatch with `apply=true` and a `bucket_name`
+
+Required repo secrets (AWS console → IAM user access keys):
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN` (optional, only if you use temporary credentials)
 
 ## Security (production)
 
