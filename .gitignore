@@ -7,3 +7,7 @@ coverage
 .vercel
 playwright-report
 test-results
+test-reports
+.terraform/
+*.tfstate
+*.tfstate.*
