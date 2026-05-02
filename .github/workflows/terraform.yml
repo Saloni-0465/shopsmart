@@ -1,0 +1,321 @@
+name: AWS ECS Pipeline
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      bucket_name:
+        description: "Optional unique S3 bucket name. Defaults to shopsmart-<aws-account>-<region>."
+        required: false
+      aws_region:
+        description: "Optional AWS region override. Defaults to AWS_REGION secret."
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  APP_NAME: shopsmart
+  CONTAINER_NAME: shopsmart-api
+  CONTAINER_PORT: "5001"
+  TF_DIR: infra/terraform
+
+jobs:
+  test:
+    name: Phase 1 - Tests and reports
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: shopsmart_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      CI: true
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/shopsmart_ci
+      JWT_SECRET: ci-jwt-secret-change-in-real-deployments
+      SHOPSMART_API_URL: http://127.0.0.1:5001
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
+            package-lock.json
+
+      - name: Create test report directory
+        run: mkdir -p test-reports
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Client unit tests
+        working-directory: client
+        run: npm test -- --reporter=default --reporter=junit --outputFile=../test-reports/client-unit-junit.xml
+
+      - name: Server unit tests
+        working-directory: server
+        run: npm test -- --watchman=false --ci --json --outputFile=../test-reports/server-unit-results.json
+
+      - name: Apply database migrations
+        working-directory: server
+        run: npx prisma migrate deploy
+
+      - name: Seed test catalog
+        working-directory: server
+        run: npm run db:seed
+
+      - name: Server integration tests
+        working-directory: server
+        run: npm run test:integration -- --watchman=false --ci --json --outputFile=../test-reports/server-integration-results.json
+
+      - name: Start API for client integration tests
+        working-directory: server
+        run: |
+          node src/index.js &
+          echo $! > /tmp/shopsmart-api.pid
+          cd "${{ github.workspace }}"
+          npx wait-on http-get://127.0.0.1:5001/api/health -t 120000
+
+      - name: Client integration tests
+        working-directory: client
+        env:
+          SHOPSMART_INTEGRATION: "1"
+        run: npm run test:integration -- --reporter=default --reporter=junit --outputFile=../test-reports/client-integration-junit.xml
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f /tmp/shopsmart-api.pid ]; then
+            kill "$(cat /tmp/shopsmart-api.pid)" 2>/dev/null || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: test-reports/
+          retention-days: 14
+
+  terraform:
+    name: Phase 2 - Terraform plan and apply
+    runs-on: ubuntu-latest
+    needs: [test]
+    outputs:
+      aws_region: ${{ steps.terraform_outputs.outputs.aws_region }}
+      ecr_repository_url: ${{ steps.terraform_outputs.outputs.ecr_repository_url }}
+      ecs_cluster_name: ${{ steps.terraform_outputs.outputs.ecs_cluster_name }}
+      ecs_service_name: ${{ steps.terraform_outputs.outputs.ecs_service_name }}
+      public_subnet_ids: ${{ steps.terraform_outputs.outputs.public_subnet_ids }}
+      service_security_group_id: ${{ steps.terraform_outputs.outputs.service_security_group_id }}
+      target_group_arn: ${{ steps.terraform_outputs.outputs.target_group_arn }}
+      task_execution_role_arn: ${{ steps.terraform_outputs.outputs.task_execution_role_arn }}
+      load_balancer_dns_name: ${{ steps.terraform_outputs.outputs.load_balancer_dns_name }}
+    defaults:
+      run:
+        working-directory: infra/terraform
+    env:
+      AWS_REGION: ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve unique S3 bucket name
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          if [ -n "${{ github.event.inputs.bucket_name }}" ]; then
+            BUCKET_NAME="${{ github.event.inputs.bucket_name }}"
+          else
+            BUCKET_NAME="shopsmart-${ACCOUNT_ID}-${AWS_REGION}"
+          fi
+          echo "TF_VAR_bucket_name=${BUCKET_NAME}" >> "$GITHUB_ENV"
+          echo "TF_VAR_aws_region=${AWS_REGION}" >> "$GITHUB_ENV"
+          echo "TF_VAR_app_name=${APP_NAME}" >> "$GITHUB_ENV"
+          echo "TF_VAR_container_port=${CONTAINER_PORT}" >> "$GITHUB_ENV"
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform apply
+        if: github.event_name != 'pull_request'
+        run: terraform apply -auto-approve -input=false tfplan
+
+      - name: Collect Terraform outputs
+        id: terraform_outputs
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "aws_region=$(terraform output -raw aws_region)" >> "$GITHUB_OUTPUT"
+          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+          echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "ecs_service_name=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
+          echo "service_security_group_id=$(terraform output -raw service_security_group_id)" >> "$GITHUB_OUTPUT"
+          echo "target_group_arn=$(terraform output -raw target_group_arn)" >> "$GITHUB_OUTPUT"
+          echo "task_execution_role_arn=$(terraform output -raw task_execution_role_arn)" >> "$GITHUB_OUTPUT"
+          echo "load_balancer_dns_name=$(terraform output -raw load_balancer_dns_name)" >> "$GITHUB_OUTPUT"
+          echo "public_subnet_ids=$(terraform output -json public_subnet_ids)" >> "$GITHUB_OUTPUT"
+
+  build_and_push:
+    name: Phase 3 - Docker build and ECR push
+    runs-on: ubuntu-latest
+    needs: [terraform]
+    if: github.event_name != 'pull_request'
+    outputs:
+      image_uri: ${{ steps.image.outputs.image_uri }}
+    env:
+      AWS_REGION: ${{ needs.terraform.outputs.aws_region }}
+      ECR_REPOSITORY_URL: ${{ needs.terraform.outputs.ecr_repository_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: image
+        run: |
+          IMAGE_TAG="${GITHUB_SHA::7}"
+          IMAGE_URI="${ECR_REPOSITORY_URL}:${IMAGE_TAG}"
+          docker build --pull -t "${IMAGE_URI}" .
+          docker push "${IMAGE_URI}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+
+  deploy_ecs:
+    name: Phase 3 - Deploy to ECS Fargate
+    runs-on: ubuntu-latest
+    needs: [terraform, build_and_push]
+    if: github.event_name != 'pull_request'
+    env:
+      AWS_REGION: ${{ needs.terraform.outputs.aws_region }}
+      CLUSTER_NAME: ${{ needs.terraform.outputs.ecs_cluster_name }}
+      SERVICE_NAME: ${{ needs.terraform.outputs.ecs_service_name }}
+      IMAGE_URI: ${{ needs.build_and_push.outputs.image_uri }}
+      PUBLIC_SUBNET_IDS: ${{ needs.terraform.outputs.public_subnet_ids }}
+      SERVICE_SECURITY_GROUP_ID: ${{ needs.terraform.outputs.service_security_group_id }}
+      TARGET_GROUP_ARN: ${{ needs.terraform.outputs.target_group_arn }}
+      TASK_EXECUTION_ROLE_ARN: ${{ needs.terraform.outputs.task_execution_role_arn }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate runtime secrets
+        run: |
+          : "${DATABASE_URL:?DATABASE_URL GitHub secret is required for the ECS task}"
+          : "${JWT_SECRET:?JWT_SECRET GitHub secret is required for the ECS task}"
+
+      - name: Render ECS task definition
+        run: |
+          jq \
+            --arg image "${IMAGE_URI}" \
+            --arg role "${TASK_EXECUTION_ROLE_ARN}" \
+            --arg region "${AWS_REGION}" \
+            --arg database_url "${DATABASE_URL}" \
+            --arg jwt_secret "${JWT_SECRET}" \
+            '.executionRoleArn = $role
+             | .containerDefinitions[0].image = $image
+             | .containerDefinitions[0].environment = [
+                {"name":"PORT","value":"5001"},
+                {"name":"DATABASE_URL","value":$database_url},
+                {"name":"JWT_SECRET","value":$jwt_secret}
+               ]
+             | .containerDefinitions[0].logConfiguration.options."awslogs-region" = $region' \
+            infra/ecs-task-definition.json > task-definition.json
+
+      - name: Register task definition
+        id: task
+        run: |
+          TASK_DEFINITION_ARN="$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
+          echo "task_definition_arn=${TASK_DEFINITION_ARN}" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update ECS service
+        run: |
+          SUBNETS="$(echo "${PUBLIC_SUBNET_IDS}" | jq -r 'join(",")')"
+          SERVICE_STATUS="$(aws ecs describe-services \
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}" \
+            --query 'services[0].status' \
+            --output text 2>/dev/null || true)"
+
+          if [ "${SERVICE_STATUS}" = "ACTIVE" ]; then
+            aws ecs update-service \
+              --cluster "${CLUSTER_NAME}" \
+              --service "${SERVICE_NAME}" \
+              --task-definition "${{ steps.task.outputs.task_definition_arn }}" \
+              --desired-count 1
+          else
+            aws ecs create-service \
+              --cluster "${CLUSTER_NAME}" \
+              --service-name "${SERVICE_NAME}" \
+              --task-definition "${{ steps.task.outputs.task_definition_arn }}" \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --health-check-grace-period-seconds 60 \
+              --network-configuration "awsvpcConfiguration={subnets=[${SUBNETS}],securityGroups=[${SERVICE_SECURITY_GROUP_ID}],assignPublicIp=ENABLED}" \
+              --load-balancers "targetGroupArn=${TARGET_GROUP_ARN},containerName=${CONTAINER_NAME},containerPort=${CONTAINER_PORT}"
+          fi
+
+      - name: Verify ECS service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}"
+          echo "Shopsmart API is available at http://${{ needs.terraform.outputs.load_balancer_dns_name }}/api/health"
