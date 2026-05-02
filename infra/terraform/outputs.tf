@@ -30,7 +30,7 @@ output "ecs_service_name" {
 
 output "task_execution_role_arn" {
   description = "IAM role ARN used by ECS tasks to pull images and write logs"
-  value       = aws_iam_role.ecs_task_execution.arn
+  value       = local.task_execution_role_arn
 }
 
 output "target_group_arn" {

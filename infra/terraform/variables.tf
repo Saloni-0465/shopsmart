@@ -21,6 +21,12 @@ variable "container_port" {
   default     = 5001
 }
 
+variable "task_execution_role_arn" {
+  description = "Existing IAM role ARN for ECS task execution. Required in AWS lab accounts that cannot create IAM roles."
+  type        = string
+  default     = ""
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the ECS VPC"
   type        = string

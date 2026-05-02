@@ -37,6 +37,8 @@ locals {
   tags = merge(var.tags, {
     app = var.app_name
   })
+  create_task_execution_role = var.task_execution_role_arn == ""
+  task_execution_role_arn    = local.create_task_execution_role ? aws_iam_role.ecs_task_execution[0].arn : var.task_execution_role_arn
 }
 
 data "aws_availability_zones" "available" {
@@ -69,6 +71,8 @@ resource "aws_cloudwatch_log_group" "app" {
 }
 
 resource "aws_iam_role" "ecs_task_execution" {
+  count = local.create_task_execution_role ? 1 : 0
+
   name = "${local.name}-ecs-task-execution-role"
   tags = local.tags
 
@@ -87,7 +91,9 @@ resource "aws_iam_role" "ecs_task_execution" {
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
-  role       = aws_iam_role.ecs_task_execution.name
+  count = local.create_task_execution_role ? 1 : 0
+
+  role       = aws_iam_role.ecs_task_execution[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 

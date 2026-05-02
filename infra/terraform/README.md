@@ -43,3 +43,4 @@ terraform apply -var="bucket_name=YOUR_UNIQUE_BUCKET_NAME" -var="aws_region=ap-s
 - `aws_region` (optional): defaults to `ap-south-1`
 - `app_name` (optional): defaults to `shopsmart`
 - `container_port` (optional): defaults to `5001`
+- `task_execution_role_arn` (optional): use an existing ECS-compatible IAM role, such as a lab-provided role, when the AWS account cannot create IAM roles

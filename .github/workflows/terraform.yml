@@ -158,12 +158,18 @@ jobs:
           if [ -n "${{ github.event.inputs.bucket_name }}" ]; then
             BUCKET_NAME="${{ github.event.inputs.bucket_name }}"
           else
-            BUCKET_NAME="shopsmart-${ACCOUNT_ID}-${AWS_REGION}"
+            BUCKET_NAME="shopsmart-${ACCOUNT_ID}-${AWS_REGION}-${GITHUB_RUN_ID}"
+          fi
+          APP_STACK_NAME="shopsmart-${GITHUB_RUN_NUMBER}"
+          TASK_EXECUTION_ROLE_ARN="${{ secrets.ECS_TASK_EXECUTION_ROLE_ARN }}"
+          if [ -z "${TASK_EXECUTION_ROLE_ARN}" ]; then
+            TASK_EXECUTION_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/LabRole"
           fi
           echo "TF_VAR_bucket_name=${BUCKET_NAME}" >> "$GITHUB_ENV"
           echo "TF_VAR_aws_region=${AWS_REGION}" >> "$GITHUB_ENV"
-          echo "TF_VAR_app_name=${APP_NAME}" >> "$GITHUB_ENV"
+          echo "TF_VAR_app_name=${APP_STACK_NAME}" >> "$GITHUB_ENV"
           echo "TF_VAR_container_port=${CONTAINER_PORT}" >> "$GITHUB_ENV"
+          echo "TF_VAR_task_execution_role_arn=${TASK_EXECUTION_ROLE_ARN}" >> "$GITHUB_ENV"
 
       - name: Terraform fmt
         run: terraform fmt -check -recursive
