@@ -1,0 +1,54 @@
+{
+  "family": "shopsmart-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "TASK_EXECUTION_ROLE_ARN",
+  "containerDefinitions": [
+    {
+      "name": "shopsmart-api",
+      "image": "IMAGE_URI",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 5001,
+          "hostPort": 5001,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "PORT",
+          "value": "5001"
+        },
+        {
+          "name": "DATABASE_URL",
+          "value": "DATABASE_URL_VALUE"
+        },
+        {
+          "name": "JWT_SECRET",
+          "value": "JWT_SECRET_VALUE"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/shopsmart-api",
+          "awslogs-region": "AWS_REGION_VALUE",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://127.0.0.1:5001/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 20
+      }
+    }
+  ]
+}
