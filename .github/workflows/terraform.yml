@@ -209,11 +209,14 @@ jobs:
     outputs:
       image_uri: ${{ steps.image.outputs.image_uri }}
     env:
-      AWS_REGION: ${{ needs.terraform.outputs.aws_region }}
+      AWS_REGION: ${{ needs.terraform.outputs.aws_region || github.event.inputs.aws_region || secrets.AWS_REGION }}
       ECR_REPOSITORY_URL: ${{ needs.terraform.outputs.ecr_repository_url }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate AWS region
+        run: ': "${AWS_REGION:?AWS_REGION is required. Add the AWS_REGION repository secret or provide aws_region when running the workflow."}"'
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -239,7 +242,7 @@ jobs:
     needs: [terraform, build_and_push]
     if: github.event_name != 'pull_request'
     env:
-      AWS_REGION: ${{ needs.terraform.outputs.aws_region }}
+      AWS_REGION: ${{ needs.terraform.outputs.aws_region || github.event.inputs.aws_region || secrets.AWS_REGION }}
       CLUSTER_NAME: ${{ needs.terraform.outputs.ecs_cluster_name }}
       SERVICE_NAME: ${{ needs.terraform.outputs.ecs_service_name }}
       IMAGE_URI: ${{ needs.build_and_push.outputs.image_uri }}
@@ -252,6 +255,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate AWS region
+        run: ': "${AWS_REGION:?AWS_REGION is required. Add the AWS_REGION repository secret or provide aws_region when running the workflow."}"'
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
