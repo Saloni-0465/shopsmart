@@ -19,6 +19,7 @@ permissions:
 
 env:
   APP_NAME: shopsmart
+  STACK_NAME: shopsmart-${{ github.run_number }}
   CONTAINER_NAME: shopsmart-api
   CONTAINER_PORT: "5001"
   TF_DIR: infra/terraform
@@ -160,14 +161,13 @@ jobs:
           else
             BUCKET_NAME="shopsmart-${ACCOUNT_ID}-${AWS_REGION}-${GITHUB_RUN_ID}"
           fi
-          APP_STACK_NAME="shopsmart-${GITHUB_RUN_NUMBER}"
           TASK_EXECUTION_ROLE_ARN="${{ secrets.ECS_TASK_EXECUTION_ROLE_ARN }}"
           if [ -z "${TASK_EXECUTION_ROLE_ARN}" ]; then
             TASK_EXECUTION_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/LabRole"
           fi
           echo "TF_VAR_bucket_name=${BUCKET_NAME}" >> "$GITHUB_ENV"
           echo "TF_VAR_aws_region=${AWS_REGION}" >> "$GITHUB_ENV"
-          echo "TF_VAR_app_name=${APP_STACK_NAME}" >> "$GITHUB_ENV"
+          echo "TF_VAR_app_name=${STACK_NAME}" >> "$GITHUB_ENV"
           echo "TF_VAR_container_port=${CONTAINER_PORT}" >> "$GITHUB_ENV"
           echo "TF_VAR_task_execution_role_arn=${TASK_EXECUTION_ROLE_ARN}" >> "$GITHUB_ENV"
 
@@ -231,11 +231,25 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Resolve ECR repository URL
+        run: |
+          if [ -z "${ECR_REPOSITORY_URL}" ]; then
+            ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+            ECR_REPOSITORY_URL="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${STACK_NAME}-api"
+          fi
+          aws ecr describe-repositories --repository-names "${STACK_NAME}-api" >/dev/null
+          echo "ECR_REPOSITORY_URL=${ECR_REPOSITORY_URL}" >> "$GITHUB_ENV"
+          echo "Using ECR repository: ${ECR_REPOSITORY_URL}"
+
       - name: Build and push Docker image
         id: image
         run: |
           IMAGE_TAG="${GITHUB_SHA::7}"
           IMAGE_URI="${ECR_REPOSITORY_URL}:${IMAGE_TAG}"
+          if [ -z "${ECR_REPOSITORY_URL}" ] || [ "${IMAGE_URI}" = ":${IMAGE_TAG}" ]; then
+            echo "ECR_REPOSITORY_URL is empty; cannot build a valid Docker image tag."
+            exit 1
+          fi
           docker build --pull -t "${IMAGE_URI}" .
           docker push "${IMAGE_URI}"
           echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
@@ -278,6 +292,49 @@ jobs:
         run: |
           : "${DATABASE_URL:?DATABASE_URL GitHub secret is required for the ECS task}"
           : "${JWT_SECRET:?JWT_SECRET GitHub secret is required for the ECS task}"
+
+      - name: Resolve ECS deployment values
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+
+          if [ -z "${CLUSTER_NAME}" ]; then
+            CLUSTER_NAME="${STACK_NAME}-cluster"
+          fi
+          if [ -z "${SERVICE_NAME}" ]; then
+            SERVICE_NAME="${STACK_NAME}-api"
+          fi
+          if [ -z "${TARGET_GROUP_ARN}" ]; then
+            TARGET_GROUP_ARN="$(aws elbv2 describe-target-groups \
+              --names "${STACK_NAME}-api-tg" \
+              --query 'TargetGroups[0].TargetGroupArn' \
+              --output text)"
+          fi
+          if [ -z "${SERVICE_SECURITY_GROUP_ID}" ]; then
+            SERVICE_SECURITY_GROUP_ID="$(aws ec2 describe-security-groups \
+              --filters "Name=group-name,Values=${STACK_NAME}-service-sg" \
+              --query 'SecurityGroups[0].GroupId' \
+              --output text)"
+          fi
+          if [ -z "${PUBLIC_SUBNET_IDS}" ]; then
+            DEFAULT_VPC_ID="$(aws ec2 describe-vpcs \
+              --filters "Name=is-default,Values=true" \
+              --query 'Vpcs[0].VpcId' \
+              --output text)"
+            PUBLIC_SUBNET_IDS="$(aws ec2 describe-subnets \
+              --filters "Name=vpc-id,Values=${DEFAULT_VPC_ID}" \
+              --query 'Subnets[].SubnetId' \
+              --output json | jq -c '.')"
+          fi
+          if [ -z "${TASK_EXECUTION_ROLE_ARN}" ]; then
+            TASK_EXECUTION_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/LabRole"
+          fi
+
+          echo "CLUSTER_NAME=${CLUSTER_NAME}" >> "$GITHUB_ENV"
+          echo "SERVICE_NAME=${SERVICE_NAME}" >> "$GITHUB_ENV"
+          echo "TARGET_GROUP_ARN=${TARGET_GROUP_ARN}" >> "$GITHUB_ENV"
+          echo "SERVICE_SECURITY_GROUP_ID=${SERVICE_SECURITY_GROUP_ID}" >> "$GITHUB_ENV"
+          echo "PUBLIC_SUBNET_IDS=${PUBLIC_SUBNET_IDS}" >> "$GITHUB_ENV"
+          echo "TASK_EXECUTION_ROLE_ARN=${TASK_EXECUTION_ROLE_ARN}" >> "$GITHUB_ENV"
 
       - name: Render ECS task definition
         run: |
