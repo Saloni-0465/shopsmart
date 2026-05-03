@@ -264,6 +264,7 @@ jobs:
       CLUSTER_NAME: ${{ needs.terraform.outputs.ecs_cluster_name }}
       SERVICE_NAME: ${{ needs.terraform.outputs.ecs_service_name }}
       IMAGE_URI: ${{ needs.build_and_push.outputs.image_uri }}
+      ECR_REPOSITORY_URL: ${{ needs.terraform.outputs.ecr_repository_url }}
       PUBLIC_SUBNET_IDS: ${{ needs.terraform.outputs.public_subnet_ids }}
       SERVICE_SECURITY_GROUP_ID: ${{ needs.terraform.outputs.service_security_group_id }}
       TARGET_GROUP_ARN: ${{ needs.terraform.outputs.target_group_arn }}
@@ -290,8 +291,14 @@ jobs:
 
       - name: Validate runtime secrets
         run: |
-          : "${DATABASE_URL:?DATABASE_URL GitHub secret is required for the ECS task}"
-          : "${JWT_SECRET:?JWT_SECRET GitHub secret is required for the ECS task}"
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "DATABASE_URL GitHub secret is required for the ECS task."
+            exit 1
+          fi
+          if [ -z "${JWT_SECRET}" ]; then
+            echo "JWT_SECRET GitHub secret is required for the ECS task."
+            exit 1
+          fi
 
       - name: Resolve ECS deployment values
         run: |
@@ -302,6 +309,13 @@ jobs:
           fi
           if [ -z "${SERVICE_NAME}" ]; then
             SERVICE_NAME="${STACK_NAME}-api"
+          fi
+          if [ -z "${ECR_REPOSITORY_URL}" ]; then
+            ECR_REPOSITORY_URL="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${STACK_NAME}-api"
+          fi
+          if [ -z "${IMAGE_URI}" ]; then
+            IMAGE_TAG="${GITHUB_SHA::7}"
+            IMAGE_URI="${ECR_REPOSITORY_URL}:${IMAGE_TAG}"
           fi
           if [ -z "${TARGET_GROUP_ARN}" ]; then
             TARGET_GROUP_ARN="$(aws elbv2 describe-target-groups \
@@ -328,9 +342,15 @@ jobs:
           if [ -z "${TASK_EXECUTION_ROLE_ARN}" ]; then
             TASK_EXECUTION_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/LabRole"
           fi
+          if [ -z "${IMAGE_URI}" ] || [ "${IMAGE_URI}" = ":${GITHUB_SHA::7}" ]; then
+            echo "IMAGE_URI is empty; cannot register an ECS task definition."
+            exit 1
+          fi
 
           echo "CLUSTER_NAME=${CLUSTER_NAME}" >> "$GITHUB_ENV"
           echo "SERVICE_NAME=${SERVICE_NAME}" >> "$GITHUB_ENV"
+          echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
+          echo "ECR_REPOSITORY_URL=${ECR_REPOSITORY_URL}" >> "$GITHUB_ENV"
           echo "TARGET_GROUP_ARN=${TARGET_GROUP_ARN}" >> "$GITHUB_ENV"
           echo "SERVICE_SECURITY_GROUP_ID=${SERVICE_SECURITY_GROUP_ID}" >> "$GITHUB_ENV"
           echo "PUBLIC_SUBNET_IDS=${PUBLIC_SUBNET_IDS}" >> "$GITHUB_ENV"
