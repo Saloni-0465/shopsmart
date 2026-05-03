@@ -412,7 +412,46 @@ jobs:
 
       - name: Verify ECS service stability
         run: |
-          aws ecs wait services-stable \
+          for attempt in $(seq 1 40); do
+            SERVICE_JSON="$(aws ecs describe-services \
+              --cluster "${CLUSTER_NAME}" \
+              --services "${SERVICE_NAME}" \
+              --output json)"
+            RUNNING_COUNT="$(echo "${SERVICE_JSON}" | jq -r '.services[0].runningCount')"
+            DESIRED_COUNT="$(echo "${SERVICE_JSON}" | jq -r '.services[0].desiredCount')"
+            DEPLOYMENTS="$(echo "${SERVICE_JSON}" | jq -r '.services[0].deployments | length')"
+
+            echo "Stability check ${attempt}/40: running=${RUNNING_COUNT}, desired=${DESIRED_COUNT}, deployments=${DEPLOYMENTS}"
+
+            if [ "${RUNNING_COUNT}" = "${DESIRED_COUNT}" ] && [ "${DEPLOYMENTS}" = "1" ]; then
+              echo "Shopsmart API is available at http://${{ needs.terraform.outputs.load_balancer_dns_name }}/api/health"
+              exit 0
+            fi
+
+            echo "${SERVICE_JSON}" | jq -r '.services[0].events[:5][] | "- " + .message'
+            sleep 15
+          done
+
+          echo "ECS service did not become stable. Printing diagnostics..."
+          aws ecs describe-services \
             --cluster "${CLUSTER_NAME}" \
-            --services "${SERVICE_NAME}"
-          echo "Shopsmart API is available at http://${{ needs.terraform.outputs.load_balancer_dns_name }}/api/health"
+            --services "${SERVICE_NAME}" \
+            --query 'services[0].events[:10].[createdAt,message]' \
+            --output table || true
+
+          TASK_ARNS="$(aws ecs list-tasks \
+            --cluster "${CLUSTER_NAME}" \
+            --service-name "${SERVICE_NAME}" \
+            --desired-status STOPPED \
+            --query 'taskArns[:5]' \
+            --output text || true)"
+          if [ -n "${TASK_ARNS}" ]; then
+            aws ecs describe-tasks \
+              --cluster "${CLUSTER_NAME}" \
+              --tasks ${TASK_ARNS} \
+              --query 'tasks[].{taskArn:taskArn,lastStatus:lastStatus,stoppedReason:stoppedReason,containers:containers[].{name:name,lastStatus:lastStatus,exitCode:exitCode,reason:reason}}' \
+              --output json || true
+          fi
+
+          aws logs tail "/ecs/${STACK_NAME}-api" --since 30m || true
+          exit 1
