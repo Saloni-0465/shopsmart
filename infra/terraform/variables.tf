@@ -27,6 +27,12 @@ variable "task_execution_role_arn" {
   default     = ""
 }
 
+variable "use_default_vpc" {
+  description = "Use the account default VPC and subnets instead of creating a new VPC. Recommended for AWS lab accounts with strict VPC quotas."
+  type        = bool
+  default     = true
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the ECS VPC"
   type        = string

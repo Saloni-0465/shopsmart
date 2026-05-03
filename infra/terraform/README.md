@@ -15,7 +15,7 @@ It also provisions the ECS/Fargate foundation used by Phase 3:
 - ECS cluster
 - CloudWatch log group
 - Task execution IAM role
-- VPC, public subnets, route table, and internet gateway
+- Networking from the default VPC/subnets by default, or a dedicated VPC/subnets if `use_default_vpc=false`
 - Application Load Balancer, target group, listener, and security groups
 
 The ECS service and task definition revision are created or updated by GitHub Actions after the Docker image is pushed to ECR.
@@ -44,3 +44,4 @@ terraform apply -var="bucket_name=YOUR_UNIQUE_BUCKET_NAME" -var="aws_region=ap-s
 - `app_name` (optional): defaults to `shopsmart`
 - `container_port` (optional): defaults to `5001`
 - `task_execution_role_arn` (optional): use an existing ECS-compatible IAM role, such as a lab-provided role, when the AWS account cannot create IAM roles
+- `use_default_vpc` (optional): defaults to `true` to avoid VPC quota issues in AWS lab accounts

@@ -45,7 +45,7 @@ output "service_security_group_id" {
 
 output "public_subnet_ids" {
   description = "Public subnet IDs used by ECS Fargate"
-  value       = aws_subnet.public[*].id
+  value       = local.public_subnet_ids
 }
 
 output "load_balancer_dns_name" {

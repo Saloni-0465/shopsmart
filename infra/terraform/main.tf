@@ -39,10 +39,26 @@ locals {
   })
   create_task_execution_role = var.task_execution_role_arn == ""
   task_execution_role_arn    = local.create_task_execution_role ? aws_iam_role.ecs_task_execution[0].arn : var.task_execution_role_arn
+  vpc_id                     = var.use_default_vpc ? data.aws_vpc.default[0].id : aws_vpc.app[0].id
+  public_subnet_ids          = var.use_default_vpc ? data.aws_subnets.default[0].ids : aws_subnet.public[*].id
 }
 
 data "aws_availability_zones" "available" {
   state = "available"
+}
+
+data "aws_vpc" "default" {
+  count   = var.use_default_vpc ? 1 : 0
+  default = true
+}
+
+data "aws_subnets" "default" {
+  count = var.use_default_vpc ? 1 : 0
+
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default[0].id]
+  }
 }
 
 resource "aws_ecr_repository" "app" {
@@ -98,6 +114,8 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
 }
 
 resource "aws_vpc" "app" {
+  count = var.use_default_vpc ? 0 : 1
+
   cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -107,15 +125,17 @@ resource "aws_vpc" "app" {
 }
 
 resource "aws_internet_gateway" "app" {
-  vpc_id = aws_vpc.app.id
+  count = var.use_default_vpc ? 0 : 1
+
+  vpc_id = aws_vpc.app[0].id
   tags = merge(local.tags, {
     Name = "${local.name}-igw"
   })
 }
 
 resource "aws_subnet" "public" {
-  count                   = length(var.public_subnet_cidrs)
-  vpc_id                  = aws_vpc.app.id
+  count                   = var.use_default_vpc ? 0 : length(var.public_subnet_cidrs)
+  vpc_id                  = aws_vpc.app[0].id
   cidr_block              = var.public_subnet_cidrs[count.index]
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
@@ -125,28 +145,32 @@ resource "aws_subnet" "public" {
 }
 
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.app.id
+  count = var.use_default_vpc ? 0 : 1
+
+  vpc_id = aws_vpc.app[0].id
   tags = merge(local.tags, {
     Name = "${local.name}-public-rt"
   })
 }
 
 resource "aws_route" "public_internet" {
-  route_table_id         = aws_route_table.public.id
+  count = var.use_default_vpc ? 0 : 1
+
+  route_table_id         = aws_route_table.public[0].id
   destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.app.id
+  gateway_id             = aws_internet_gateway.app[0].id
 }
 
 resource "aws_route_table_association" "public" {
-  count          = length(aws_subnet.public)
+  count          = var.use_default_vpc ? 0 : length(aws_subnet.public)
   subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
+  route_table_id = aws_route_table.public[0].id
 }
 
 resource "aws_security_group" "alb" {
   name        = "${local.name}-alb-sg"
   description = "Allow HTTP traffic to the Shopsmart ALB"
-  vpc_id      = aws_vpc.app.id
+  vpc_id      = local.vpc_id
   tags        = local.tags
 
   ingress {
@@ -169,7 +193,7 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "service" {
   name        = "${local.name}-service-sg"
   description = "Allow ALB traffic to the Shopsmart ECS service"
-  vpc_id      = aws_vpc.app.id
+  vpc_id      = local.vpc_id
   tags        = local.tags
 
   ingress {
@@ -192,7 +216,7 @@ resource "aws_security_group" "service" {
 resource "aws_lb" "app" {
   name               = "${local.name}-alb"
   load_balancer_type = "application"
-  subnets            = aws_subnet.public[*].id
+  subnets            = local.public_subnet_ids
   security_groups    = [aws_security_group.alb.id]
   tags               = local.tags
 }
@@ -202,7 +226,7 @@ resource "aws_lb_target_group" "app" {
   port        = var.container_port
   protocol    = "HTTP"
   target_type = "ip"
-  vpc_id      = aws_vpc.app.id
+  vpc_id      = local.vpc_id
   tags        = local.tags
 
   health_check {
